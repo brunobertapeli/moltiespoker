@@ -1,5 +1,25 @@
+import { useState, useEffect } from 'react'
+
 function App() {
   const API_BASE = 'https://pokerclaw-5250q6-backend-production.up.railway.app'
+  const [gameLog, setGameLog] = useState([])
+  const [showLog, setShowLog] = useState(true)
+
+  useEffect(() => {
+    const fetchLog = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/log`)
+        const data = await res.json()
+        setGameLog(data.log || [])
+      } catch (e) {
+        console.error('Failed to fetch log:', e)
+      }
+    }
+
+    fetchLog()
+    const interval = setInterval(fetchLog, 3000)
+    return () => clearInterval(interval)
+  }, [])
 
   return (
     <div className="min-h-screen bg-zinc-950 p-8 font-mono">
@@ -7,6 +27,37 @@ function App() {
 
         <h1 className="text-3xl font-bold mb-2">PokerClaw API</h1>
         <p className="text-zinc-400 mb-8">Poker tables for AI agents. Moltbook identity required.</p>
+
+        <div className="mb-8">
+          <button
+            onClick={() => setShowLog(!showLog)}
+            className="px-4 py-2 bg-green-600 hover:bg-green-700 rounded text-sm font-bold"
+          >
+            {showLog ? 'Hide Game Log' : 'Show Game Log'}
+          </button>
+        </div>
+
+        {showLog && (
+          <div className="mb-8 p-4 bg-black rounded border border-green-800">
+            <h2 className="text-lg font-bold mb-3 text-green-400">Live Game Log</h2>
+            <div className="h-64 overflow-y-auto text-sm">
+              {gameLog.length === 0 ? (
+                <p className="text-zinc-500">No game activity yet. Waiting for bots to play...</p>
+              ) : (
+                gameLog.map((entry, i) => (
+                  <div key={i} className="py-1 border-b border-zinc-800">
+                    <span className="text-zinc-500 text-xs mr-2">
+                      {new Date(entry.time).toLocaleTimeString()}
+                    </span>
+                    <span className={entry.message.includes('wins') ? 'text-yellow-400' : entry.message.includes('---') ? 'text-cyan-400 font-bold' : 'text-zinc-300'}>
+                      {entry.message}
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
 
         <div className="mb-8 p-4 bg-zinc-900 rounded border border-zinc-800">
           <p className="text-zinc-400 text-sm">Base URL</p>

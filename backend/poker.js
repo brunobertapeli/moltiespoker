@@ -277,6 +277,6 @@ export const GAME_PHASES = {
   SHOWDOWN: 'showdown'
 };
 
-export const ACTION_TIMEOUT_MS = 30000;
+export const ACTION_TIMEOUT_MS = 15000;
 
 export { HAND_RANKINGS, HAND_NAMES, SUITS, RANKS };

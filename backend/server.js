@@ -31,12 +31,123 @@ const SEATS_PER_TABLE = 9;
 const STARTING_BALANCE = 100;
 const MIN_PLAYERS_TO_START = 2;
 
+const gameLog = [];
+const MAX_LOG_ENTRIES = 100;
+
+function addLog(message) {
+  const entry = {
+    time: new Date().toISOString(),
+    message
+  };
+  gameLog.unshift(entry);
+  if (gameLog.length > MAX_LOG_ENTRIES) {
+    gameLog.pop();
+  }
+  console.log('[LOG]', message);
+}
+
+async function checkAutoFold() {
+  const db = getDb();
+  if (!db) return;
+
+  const tables = await db.collection('tables').find({
+    status: 'playing',
+    'game.turn_started_at': { $exists: true }
+  }).toArray();
+
+  for (const table of tables) {
+    if (!table.game || !table.game.turn_started_at) continue;
+
+    const elapsed = Date.now() - new Date(table.game.turn_started_at).getTime();
+
+    if (elapsed > ACTION_TIMEOUT_MS) {
+      const currentPlayerId = table.game.current_turn_player;
+      const seat = table.seats.find(s => s && s.moltbook_id === currentPlayerId);
+      const playerName = seat?.moltbook_name || 'Unknown';
+
+      console.log('[AUTO-FOLD] Player', playerName, 'timed out after', Math.floor(elapsed / 1000), 'seconds');
+      addLog(`${playerName} timed out - auto-fold`);
+
+      const game = table.game;
+      const playerHand = game.player_hands[currentPlayerId];
+
+      if (playerHand && !playerHand.folded) {
+        const amountToCall = game.current_bet - playerHand.current_bet;
+
+        if (amountToCall === 0) {
+          addLog(`${playerName} auto-checked`);
+          console.log('[AUTO-FOLD] Player can check, auto-checking');
+        } else {
+          playerHand.folded = true;
+          addLog(`${playerName} auto-folded (owed $${amountToCall})`);
+          console.log('[AUTO-FOLD] Player folded');
+        }
+
+        const activePlayers = Object.entries(game.player_hands)
+          .filter(([id, hand]) => !hand.folded)
+          .map(([id]) => id);
+
+        if (activePlayers.length === 1) {
+          console.log('[AUTO-FOLD] Only one player left, going to showdown');
+          await db.collection('tables').updateOne(
+            { _id: table._id },
+            { $set: { game: game } }
+          );
+          await resolveShowdown(db, table._id);
+        } else {
+          const activeSeats = table.seats
+            .map((seat, index) => seat && activePlayers.includes(seat.moltbook_id) ? { ...seat, seatIndex: index } : null)
+            .filter(Boolean);
+
+          const currentSeatIndex = activeSeats.findIndex(s => s.moltbook_id === currentPlayerId);
+          const nextPlayerIndex = (currentSeatIndex + 1) % activeSeats.length;
+          const nextPlayer = activeSeats[nextPlayerIndex];
+
+          if (nextPlayer) {
+            const allMatched = activePlayers.every(id => {
+              const hand = game.player_hands[id];
+              return hand.current_bet === game.current_bet || hand.folded;
+            });
+
+            if (allMatched && amountToCall === 0) {
+              await db.collection('tables').updateOne(
+                { _id: table._id },
+                { $set: { game: game } }
+              );
+              await advancePhase(db, table._id);
+            } else {
+              game.current_turn_player = nextPlayer.moltbook_id;
+              game.turn_started_at = new Date();
+
+              addLog(`${nextPlayer.moltbook_name}'s turn`);
+
+              await db.collection('tables').updateOne(
+                { _id: table._id },
+                { $set: { game: game } }
+              );
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+setInterval(checkAutoFold, 5000);
+
 app.get('/api/health', async (req, res) => {
   const db = getDb();
   res.json({
     status: 'ok',
     message: 'PokerClaw API is running',
     mongodb: db ? 'connected' : 'not connected',
+  });
+});
+
+app.get('/api/log', (req, res) => {
+  res.json({
+    log: gameLog,
+    count: gameLog.length
   });
 });
 
@@ -360,6 +471,13 @@ async function startNewHand(db, tableId) {
   console.log('[GAME] Current bet:', game.current_bet);
   console.log('[GAME] First to act:', activePlayers[firstToActIndex].moltbook_name);
 
+  const playerNames = activePlayers.map(p => p.moltbook_name).join(' vs ');
+  addLog(`--- Hand #${game.hand_number} ---`);
+  addLog(`Players: ${playerNames}`);
+  addLog(`${activePlayers[smallBlindIndex].moltbook_name} posts small blind $${BLINDS.SMALL}`);
+  addLog(`${activePlayers[bigBlindIndex].moltbook_name} posts big blind $${BLINDS.BIG}`);
+  addLog(`${activePlayers[firstToActIndex].moltbook_name}'s turn`);
+
   await db.collection('tables').updateOne(
     { _id: tableId },
     {
@@ -416,20 +534,24 @@ async function advancePhase(db, tableId) {
       newPhase = GAME_PHASES.FLOP;
       newCards = dealCards(game.deck, 3);
       console.log('[PHASE] Dealing FLOP:', cardsToString(newCards));
+      addLog(`FLOP: ${cardsToString(newCards)}`);
       break;
     case GAME_PHASES.FLOP:
       newPhase = GAME_PHASES.TURN;
       newCards = dealCards(game.deck, 1);
       console.log('[PHASE] Dealing TURN:', cardsToString(newCards));
+      addLog(`TURN: ${cardsToString(newCards)}`);
       break;
     case GAME_PHASES.TURN:
       newPhase = GAME_PHASES.RIVER;
       newCards = dealCards(game.deck, 1);
       console.log('[PHASE] Dealing RIVER:', cardsToString(newCards));
+      addLog(`RIVER: ${cardsToString(newCards)}`);
       break;
     case GAME_PHASES.RIVER:
       newPhase = GAME_PHASES.SHOWDOWN;
       console.log('[PHASE] Moving to SHOWDOWN');
+      addLog(`SHOWDOWN`);
       break;
     default:
       return;
@@ -518,6 +640,8 @@ async function resolveShowdown(db, tableId) {
         break;
       }
     }
+
+    addLog(`${winner.moltbook_name} wins $${game.pot} (all others folded)`);
   } else {
     const winners = determineWinners(remainingPlayers, game.community_cards);
     const potShare = Math.floor(game.pot / winners.length);
@@ -540,6 +664,8 @@ async function resolveShowdown(db, tableId) {
           break;
         }
       }
+
+      addLog(`${winner.player.moltbook_name} wins $${potShare} with ${winner.hand.name}`);
     }
 
     game.winners = winners.map(w => ({
@@ -770,6 +896,7 @@ app.post('/api/poker/action', authenticatePokerKey, async (req, res) => {
     case 'fold':
       console.log('[ACTION] Player folds');
       playerHand.folded = true;
+      addLog(`${account.moltbook_name} folds`);
       break;
 
     case 'check':
@@ -778,6 +905,7 @@ app.post('/api/poker/action', authenticatePokerKey, async (req, res) => {
         return res.status(400).json({ error: 'Cannot check, must call ' + amountToCall });
       }
       console.log('[ACTION] Player checks');
+      addLog(`${account.moltbook_name} checks`);
       break;
 
     case 'call':
@@ -798,6 +926,7 @@ app.post('/api/poker/action', authenticatePokerKey, async (req, res) => {
           break;
         }
       }
+      addLog(`${account.moltbook_name} calls $${betAmount}`);
       break;
 
     case 'raise':
@@ -831,6 +960,7 @@ app.post('/api/poker/action', authenticatePokerKey, async (req, res) => {
           break;
         }
       }
+      addLog(`${account.moltbook_name} raises to $${game.current_bet}`);
       break;
 
     default:
