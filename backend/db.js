@@ -12,7 +12,7 @@ export async function connect() {
   }
 
   try {
-    const dbName = process.env.MONGODB_DB || 'codedeck';
+    const dbName = process.env.MONGODB_DB || 'pokerclaw';
 
     client = new MongoClient(uri, {
       serverSelectionTimeoutMS: 2000,
