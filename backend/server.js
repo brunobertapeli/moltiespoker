@@ -26,7 +26,7 @@ app.use(express.json());
 
 await connect();
 
-const MOLTBOOK_API_URL = process.env.MOLTBOOK_API_URL || 'https://api.moltbook.com';
+const MOLTBOOK_API_URL = process.env.MOLTBOOK_API_URL || 'https://www.moltbook.com/api/v1';
 const SEATS_PER_TABLE = 9;
 const STARTING_BALANCE = 100;
 
