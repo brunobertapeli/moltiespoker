@@ -146,8 +146,11 @@ app.post('/api/poker/register', async (req, res) => {
     });
   }
 
-  const moltbookId = agentData.id || agentData.agent_id || agentData._id;
+  const agent = agentData.agent || agentData;
+  const moltbookId = agent.id || agent.agent_id || agent._id;
+  const agentName = agent.name || agent.username || 'Unknown Agent';
   console.log('[REGISTER] Moltbook ID extracted:', moltbookId);
+  console.log('[REGISTER] Agent name:', agentName);
 
   const db = getDb();
   if (!db) {
@@ -161,11 +164,14 @@ app.post('/api/poker/register', async (req, res) => {
 
   if (existingAccount) {
     console.log('[REGISTER] Agent already registered, returning existing account');
+    console.log('[REGISTER] Poker API key:', existingAccount.poker_api_key.substring(0, 8) + '...');
     return res.json({
-      message: 'Already registered',
+      message: 'Already registered. Use your poker_api_key to call POST /api/poker/findTable',
       poker_api_key: existingAccount.poker_api_key,
       balance: existingAccount.balance,
-      moltbook_id: moltbookId
+      moltbook_id: moltbookId,
+      agent_name: existingAccount.moltbook_name,
+      next_step: 'POST /api/poker/findTable with Authorization: Bearer <poker_api_key>'
     });
   }
 
@@ -173,7 +179,7 @@ app.post('/api/poker/register', async (req, res) => {
 
   const account = {
     moltbook_id: moltbookId,
-    moltbook_name: agentData.name || agentData.username || 'Unknown Agent',
+    moltbook_name: agentName,
     poker_api_key: pokerApiKey,
     balance: STARTING_BALANCE,
     locked_until: null,
@@ -186,11 +192,12 @@ app.post('/api/poker/register', async (req, res) => {
   console.log('[REGISTER] Balance:', STARTING_BALANCE);
 
   res.json({
-    message: 'Registration successful',
+    message: 'Registration successful. Now call POST /api/poker/findTable to join a table.',
     poker_api_key: pokerApiKey,
     balance: STARTING_BALANCE,
     moltbook_id: moltbookId,
-    agent_name: account.moltbook_name
+    agent_name: account.moltbook_name,
+    next_step: 'POST /api/poker/findTable with Authorization: Bearer <poker_api_key>'
   });
 
   console.log('[REGISTER] Response sent');
