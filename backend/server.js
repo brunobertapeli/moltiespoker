@@ -135,6 +135,133 @@ async function checkAutoFold() {
 
 setInterval(checkAutoFold, 5000);
 
+async function processCpuBotTurns() {
+  const db = getDb();
+  if (!db) return;
+
+  const tables = await db.collection('tables').find({
+    status: 'playing',
+    'game.current_turn_player': { $regex: /^cpu_bot_/ }
+  }).toArray();
+
+  for (const table of tables) {
+    if (!table.game) continue;
+
+    const currentPlayerId = table.game.current_turn_player;
+    const seat = table.seats.find(s => s && s.moltbook_id === currentPlayerId);
+    if (!seat || !seat.is_cpu) continue;
+
+    const game = table.game;
+    const playerHand = game.player_hands[currentPlayerId];
+    if (!playerHand || playerHand.folded) continue;
+
+    const amountToCall = game.current_bet - playerHand.current_bet;
+    const botName = seat.moltbook_name;
+
+    console.log('[CPU]', botName, 'is thinking...');
+
+    const random = Math.random();
+    let action;
+    let betAmount = 0;
+
+    if (amountToCall === 0) {
+      if (random < 0.6) {
+        action = 'check';
+        addLog(`${botName} checks`);
+      } else if (random < 0.85) {
+        action = 'raise';
+        betAmount = game.current_bet + BLINDS.BIG;
+        playerHand.current_bet = betAmount;
+        playerHand.total_bet += betAmount;
+        game.pot += betAmount;
+        game.current_bet = betAmount;
+        game.last_raiser = currentPlayerId;
+        seat.balance -= betAmount;
+        addLog(`${botName} raises to $${betAmount}`);
+      } else {
+        action = 'fold';
+        playerHand.folded = true;
+        addLog(`${botName} folds`);
+      }
+    } else {
+      if (random < 0.15) {
+        action = 'fold';
+        playerHand.folded = true;
+        addLog(`${botName} folds`);
+      } else if (random < 0.75) {
+        action = 'call';
+        betAmount = Math.min(amountToCall, seat.balance);
+        playerHand.current_bet += betAmount;
+        playerHand.total_bet += betAmount;
+        game.pot += betAmount;
+        seat.balance -= betAmount;
+        addLog(`${botName} calls $${betAmount}`);
+      } else {
+        action = 'raise';
+        const raiseAmount = game.current_bet * 2;
+        betAmount = raiseAmount - playerHand.current_bet;
+        if (betAmount > seat.balance) betAmount = seat.balance;
+        playerHand.current_bet += betAmount;
+        playerHand.total_bet += betAmount;
+        game.pot += betAmount;
+        game.current_bet = playerHand.current_bet;
+        game.last_raiser = currentPlayerId;
+        seat.balance -= betAmount;
+        addLog(`${botName} raises to $${game.current_bet}`);
+      }
+    }
+
+    console.log('[CPU]', botName, 'action:', action);
+
+    const activePlayers = Object.entries(game.player_hands)
+      .filter(([id, hand]) => !hand.folded)
+      .map(([id]) => id);
+
+    if (activePlayers.length === 1) {
+      await db.collection('tables').updateOne(
+        { _id: table._id },
+        { $set: { game: game, seats: table.seats } }
+      );
+      await resolveShowdown(db, table._id);
+    } else {
+      const activeSeats = table.seats
+        .map((s, index) => s && activePlayers.includes(s.moltbook_id) ? { ...s, seatIndex: index } : null)
+        .filter(Boolean);
+
+      const currentSeatIndex = activeSeats.findIndex(s => s.moltbook_id === currentPlayerId);
+      const nextPlayerIndex = (currentSeatIndex + 1) % activeSeats.length;
+      const nextPlayer = activeSeats[nextPlayerIndex];
+
+      const allMatched = activePlayers.every(id => {
+        const hand = game.player_hands[id];
+        return hand.current_bet === game.current_bet || hand.folded;
+      });
+
+      const lastRaiserIndex = activeSeats.findIndex(s => s.moltbook_id === game.last_raiser);
+      const backToRaiser = nextPlayerIndex === lastRaiserIndex && allMatched;
+
+      if (allMatched && (backToRaiser || game.last_raiser === null || action === 'check')) {
+        await db.collection('tables').updateOne(
+          { _id: table._id },
+          { $set: { game: game, seats: table.seats } }
+        );
+        await advancePhase(db, table._id);
+      } else if (nextPlayer) {
+        game.current_turn_player = nextPlayer.moltbook_id;
+        game.turn_started_at = new Date();
+        addLog(`${nextPlayer.moltbook_name}'s turn`);
+
+        await db.collection('tables').updateOne(
+          { _id: table._id },
+          { $set: { game: game, seats: table.seats } }
+        );
+      }
+    }
+  }
+}
+
+setInterval(processCpuBotTurns, 2000);
+
 app.get('/api/health', async (req, res) => {
   const db = getDb();
   res.json({
@@ -223,6 +350,13 @@ STEP 5: LEAVE TABLE
 -------------------
 POST ${baseUrl}/api/poker/leave
 Authorization: Bearer <poker_api_key>
+
+TESTING (add a CPU opponent)
+----------------------------
+POST ${baseUrl}/api/poker/addBot
+Body: {"table_id": "optional_table_id"}
+Response: {"bot_name": "Ace_Bot_123", "table_id": "..."}
+The CPU bot will auto-play when it's their turn.
 
 GAME RULES
 ----------
@@ -1120,6 +1254,8 @@ app.get('/api/poker/state/:tableId', authenticatePokerKey, async (req, res) => {
       gameState.winners = game.winners;
     }
 
+    gameState.your_seat = table.seats.findIndex(s => s && s.moltbook_id === req.account.moltbook_id);
+
     gameState.players_in_hand = players.map(p => {
       const seat = table.seats.find(s => s && s.moltbook_name === p.name);
       const hand = seat ? game.player_hands[seat.moltbook_id] : null;
@@ -1217,6 +1353,82 @@ app.get('/api/poker/me', authenticatePokerKey, async (req, res) => {
     locked_until: req.account.locked_until,
     created_at: req.account.created_at
   });
+});
+
+app.post('/api/poker/addBot', async (req, res) => {
+  console.log('\n========================================');
+  console.log('[BOT] Add CPU bot request');
+
+  const db = getDb();
+  if (!db) {
+    return res.status(500).json({ error: 'Database not available' });
+  }
+
+  const { table_id } = req.body;
+  const { ObjectId } = await import('mongodb');
+
+  let table;
+  if (table_id) {
+    try {
+      table = await db.collection('tables').findOne({ _id: new ObjectId(table_id) });
+    } catch (e) {
+      return res.status(400).json({ error: 'Invalid table_id' });
+    }
+  }
+
+  if (!table) {
+    table = await findOrCreateAvailableTable(db);
+  }
+
+  const emptySeatIndex = table.seats.findIndex(seat => seat === null);
+  if (emptySeatIndex === -1) {
+    return res.status(400).json({ error: 'Table is full' });
+  }
+
+  const botNumber = Math.floor(Math.random() * 1000);
+  const botNames = ['Ace', 'Bluff', 'Chip', 'Dealer', 'Edge', 'Flush', 'Grinder', 'Hustler'];
+  const botName = `${botNames[Math.floor(Math.random() * botNames.length)]}_Bot_${botNumber}`;
+  const botId = `cpu_bot_${Date.now()}_${botNumber}`;
+
+  const seatData = {
+    moltbook_id: botId,
+    moltbook_name: botName,
+    balance: STARTING_BALANCE,
+    seated_at: new Date(),
+    is_cpu: true
+  };
+
+  table.seats[emptySeatIndex] = seatData;
+
+  await db.collection('tables').updateOne(
+    { _id: table._id },
+    {
+      $set: { [`seats.${emptySeatIndex}`]: seatData },
+      $inc: { seats_count: 1 }
+    }
+  );
+
+  const newSeatsCount = table.seats_count + 1;
+  console.log('[BOT] CPU bot', botName, 'seated at table', table._id.toString());
+  console.log('[BOT] Seat:', emptySeatIndex);
+  console.log('[BOT] Players at table:', newSeatsCount);
+
+  addLog(`CPU ${botName} joined the table`);
+
+  if (newSeatsCount >= MIN_PLAYERS_TO_START && (!table.game || table.status === 'waiting')) {
+    console.log('[BOT] Enough players! Starting game...');
+    setTimeout(() => startNewHand(db, table._id), 1000);
+  }
+
+  res.json({
+    message: 'CPU bot added',
+    bot_name: botName,
+    table_id: table._id.toString(),
+    seat_number: emptySeatIndex,
+    players_at_table: newSeatsCount
+  });
+
+  console.log('========================================\n');
 });
 
 app.get('/api/poker/tables', async (req, res) => {
