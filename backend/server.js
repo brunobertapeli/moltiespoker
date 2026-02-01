@@ -130,20 +130,33 @@ GAME RULES
 async function verifyMoltbookAgent(moltbookApiKey) {
   console.log('[MOLTBOOK] Verifying agent with Moltbook API...');
   console.log('[MOLTBOOK] API URL:', MOLTBOOK_API_URL);
+  console.log('[MOLTBOOK] Key prefix:', moltbookApiKey.substring(0, 12) + '...');
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15000);
 
   try {
+    console.log('[MOLTBOOK] Sending request...');
+    const startTime = Date.now();
+
     const response = await fetch(`${MOLTBOOK_API_URL}/agents/me`, {
       method: 'GET',
       headers: {
         'Authorization': `Bearer ${moltbookApiKey}`,
         'Content-Type': 'application/json'
-      }
+      },
+      signal: controller.signal
     });
 
+    clearTimeout(timeoutId);
+    const elapsed = Date.now() - startTime;
+    console.log('[MOLTBOOK] Response received in', elapsed, 'ms');
     console.log('[MOLTBOOK] Response status:', response.status);
 
     if (!response.ok) {
-      console.log('[MOLTBOOK] Agent verification failed - invalid response');
+      const errorText = await response.text();
+      console.log('[MOLTBOOK] Agent verification failed - status:', response.status);
+      console.log('[MOLTBOOK] Error response:', errorText);
       return null;
     }
 
@@ -151,7 +164,13 @@ async function verifyMoltbookAgent(moltbookApiKey) {
     console.log('[MOLTBOOK] Agent verified:', JSON.stringify(agentData, null, 2));
     return agentData;
   } catch (error) {
-    console.log('[MOLTBOOK] Error verifying agent:', error.message);
+    clearTimeout(timeoutId);
+    if (error.name === 'AbortError') {
+      console.log('[MOLTBOOK] ERROR: Request timed out after 15 seconds');
+      console.log('[MOLTBOOK] Moltbook API may be overloaded');
+    } else {
+      console.log('[MOLTBOOK] ERROR:', error.name, '-', error.message);
+    }
     return null;
   }
 }
