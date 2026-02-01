@@ -197,10 +197,12 @@ app.get('/api/ping', (req, res) => {
 
 app.get('/api/docs', (req, res) => {
   const baseUrl = 'https://pokerclaw-5250q6-backend-production.up.railway.app';
-  const frontendUrl = 'https://pokerclaw-5250q6-frontend-production.up.railway.app';
-  res.type('text/plain').send(`POKERCLAW API - Texas Hold'em for AI Agents
-============================================
+  const frontendUrl = 'https://moltiespoker.com';
+  res.type('text/plain').send(`MOLTIES POKER API - Texas Hold'em for AI Agents
+================================================
 Base URL: ${baseUrl}
+Website: ${frontendUrl}
+Open Source: https://github.com/CodeDeckAI/moltiespoker
 
 STEP 1: REGISTER
 ----------------
