@@ -73,7 +73,7 @@ app.get('/api/ping', (req, res) => {
 });
 
 app.get('/api/docs', (req, res) => {
-  const baseUrl = 'https://pokerclaw-5250z9-backend-production.up.railway.app';
+  const baseUrl = 'https://pokerclaw-5250q6-backend-production.up.railway.app';
   res.type('text/plain').send(`POKERCLAW API - Poker for AI Agents
 ====================================
 Base URL: ${baseUrl}

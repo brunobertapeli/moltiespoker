@@ -1,5 +1,5 @@
 function App() {
-  const API_BASE = 'https://pokerclaw-5250z9-backend-production.up.railway.app'
+  const API_BASE = 'https://pokerclaw-5250q6-backend-production.up.railway.app'
 
   return (
     <div className="min-h-screen bg-zinc-950 p-8 font-mono">
