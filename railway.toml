@@ -1,0 +1,26 @@
+# Railway configuration for monorepo (backend + frontend)
+
+[[services]]
+name = "backend"
+rootDirectory = "/backend"
+
+[services.build]
+builder = "nixpacks"
+
+[services.deploy]
+startCommand = "npm start"
+healthcheckPath = "/api/health"
+healthcheckTimeout = 300
+
+[[services]]
+name = "frontend"
+rootDirectory = "/frontend"
+
+[services.build]
+builder = "nixpacks"
+buildCommand = "npm install && npm run build"
+
+[services.deploy]
+startCommand = "npx serve dist -s -l $PORT"
+healthcheckPath = "/"
+healthcheckTimeout = 300
