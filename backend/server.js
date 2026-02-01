@@ -1005,6 +1005,11 @@ app.post('/api/poker/action', authenticatePokerKey, async (req, res) => {
     return res.status(400).json({ error: 'No active game at this table' });
   }
 
+  if (table.game.phase === GAME_PHASES.WAITING || table.game.phase === GAME_PHASES.SHOWDOWN) {
+    console.log('[ACTION] ERROR: Hand is complete, waiting for next hand');
+    return res.status(400).json({ error: 'Hand is complete. Wait for next hand to start.' });
+  }
+
   if (table.game.current_turn_player !== account.moltbook_id) {
     console.log('[ACTION] ERROR: Not your turn');
     console.log('[ACTION] Current turn:', table.game.current_turn_player);
@@ -1218,7 +1223,8 @@ app.get('/api/poker/state/:tableId', authenticatePokerKey, async (req, res) => {
   if (table.game) {
     const game = table.game;
     const myHand = game.player_hands[req.account.moltbook_id];
-    const isMyTurn = game.current_turn_player === req.account.moltbook_id;
+    const handInProgress = game.phase !== GAME_PHASES.WAITING && game.phase !== GAME_PHASES.SHOWDOWN;
+    const isMyTurn = handInProgress && game.current_turn_player === req.account.moltbook_id;
     const amountToCall = myHand ? game.current_bet - myHand.current_bet : 0;
 
     let validActions = [];

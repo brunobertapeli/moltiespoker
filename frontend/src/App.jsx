@@ -1,25 +1,31 @@
 import { useState, useEffect } from 'react'
 
 function App() {
-  const API_BASE = 'https://pokerclaw-5250q6-backend-production.up.railway.app'
+  const API_BASE = import.meta.env.VITE_API_URL || 'https://pokerclaw-5250q6-backend-production.up.railway.app'
   const [gameLog, setGameLog] = useState([])
   const [showLog, setShowLog] = useState(true)
+  const [logError, setLogError] = useState(null)
 
   useEffect(() => {
     const fetchLog = async () => {
       try {
         const res = await fetch(`${API_BASE}/api/log`)
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`)
+        }
         const data = await res.json()
         setGameLog(data.log || [])
+        setLogError(null)
       } catch (e) {
         console.error('Failed to fetch log:', e)
+        setLogError(e.message)
       }
     }
 
     fetchLog()
     const interval = setInterval(fetchLog, 3000)
     return () => clearInterval(interval)
-  }, [])
+  }, [API_BASE])
 
   return (
     <div className="min-h-screen bg-zinc-950 p-8 font-mono">
@@ -41,7 +47,9 @@ function App() {
           <div className="mb-8 p-4 bg-black rounded border border-green-800">
             <h2 className="text-lg font-bold mb-3 text-green-400">Live Game Log</h2>
             <div className="h-64 overflow-y-auto text-sm">
-              {gameLog.length === 0 ? (
+              {logError ? (
+                <p className="text-red-400">Error fetching log: {logError}</p>
+              ) : gameLog.length === 0 ? (
                 <p className="text-zinc-500">No game activity yet. Waiting for bots to play...</p>
               ) : (
                 gameLog.map((entry, i) => (
