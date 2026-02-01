@@ -71,7 +71,7 @@ async function checkAutoFold() {
       const game = table.game;
       const playerHand = game.player_hands[currentPlayerId];
 
-      if (playerHand && !playerHand.folded) {
+      if (playerHand && !playerHand.folded && !playerHand.all_in) {
         const amountToCall = game.current_bet - playerHand.current_bet;
 
         if (amountToCall === 0) {
@@ -87,6 +87,10 @@ async function checkAutoFold() {
           .filter(([id, hand]) => !hand.folded)
           .map(([id]) => id);
 
+        const playersWhoCanAct = Object.entries(game.player_hands)
+          .filter(([id, hand]) => !hand.folded && !hand.all_in)
+          .map(([id]) => id);
+
         if (activePlayers.length === 1) {
           console.log('[AUTO-FOLD] Only one player left, going to showdown');
           await db.collection('tables').updateOne(
@@ -94,19 +98,26 @@ async function checkAutoFold() {
             { $set: { game: game } }
           );
           await resolveShowdown(db, table._id);
+        } else if (playersWhoCanAct.length <= 1) {
+          console.log('[AUTO-FOLD] All remaining players are all-in, advancing');
+          await db.collection('tables').updateOne(
+            { _id: table._id },
+            { $set: { game: game } }
+          );
+          await advancePhase(db, table._id);
         } else {
           const activeSeats = table.seats
-            .map((seat, index) => seat && activePlayers.includes(seat.moltbook_id) ? { ...seat, seatIndex: index } : null)
+            .map((seat, index) => seat && playersWhoCanAct.includes(seat.moltbook_id) ? { ...seat, seatIndex: index } : null)
             .filter(Boolean);
 
           const currentSeatIndex = activeSeats.findIndex(s => s.moltbook_id === currentPlayerId);
-          const nextPlayerIndex = (currentSeatIndex + 1) % activeSeats.length;
+          const nextPlayerIndex = currentSeatIndex === -1 ? 0 : (currentSeatIndex + 1) % activeSeats.length;
           const nextPlayer = activeSeats[nextPlayerIndex];
 
           if (nextPlayer) {
-            const allMatched = activePlayers.every(id => {
+            const allMatched = playersWhoCanAct.every(id => {
               const hand = game.player_hands[id];
-              return hand.current_bet === game.current_bet || hand.folded;
+              return hand.current_bet === game.current_bet || hand.folded || hand.all_in;
             });
 
             if (allMatched && amountToCall === 0) {
@@ -153,7 +164,7 @@ async function processCpuBotTurns() {
 
     const game = table.game;
     const playerHand = game.player_hands[currentPlayerId];
-    if (!playerHand || playerHand.folded) continue;
+    if (!playerHand || playerHand.folded || playerHand.all_in) continue;
 
     const amountToCall = game.current_bet - playerHand.current_bet;
     const botName = seat.moltbook_name;
@@ -170,14 +181,19 @@ async function processCpuBotTurns() {
         addLog(`${botName} checks`);
       } else if (random < 0.85) {
         action = 'raise';
-        betAmount = game.current_bet + BLINDS.BIG;
+        betAmount = Math.min(game.current_bet + BLINDS.BIG, seat.balance);
         playerHand.current_bet = betAmount;
         playerHand.total_bet += betAmount;
         game.pot += betAmount;
         game.current_bet = betAmount;
         game.last_raiser = currentPlayerId;
         seat.balance -= betAmount;
-        addLog(`${botName} raises to $${betAmount}`);
+        if (seat.balance <= 0) {
+          playerHand.all_in = true;
+          addLog(`${botName} goes ALL-IN for $${betAmount}!`);
+        } else {
+          addLog(`${botName} raises to $${betAmount}`);
+        }
       } else {
         action = 'fold';
         playerHand.folded = true;
@@ -195,19 +211,28 @@ async function processCpuBotTurns() {
         playerHand.total_bet += betAmount;
         game.pot += betAmount;
         seat.balance -= betAmount;
-        addLog(`${botName} calls $${betAmount}`);
+        if (seat.balance <= 0) {
+          playerHand.all_in = true;
+          addLog(`${botName} is ALL-IN!`);
+        } else {
+          addLog(`${botName} calls $${betAmount}`);
+        }
       } else {
         action = 'raise';
         const raiseAmount = game.current_bet * 2;
-        betAmount = raiseAmount - playerHand.current_bet;
-        if (betAmount > seat.balance) betAmount = seat.balance;
+        betAmount = Math.min(raiseAmount - playerHand.current_bet, seat.balance);
         playerHand.current_bet += betAmount;
         playerHand.total_bet += betAmount;
         game.pot += betAmount;
         game.current_bet = playerHand.current_bet;
         game.last_raiser = currentPlayerId;
         seat.balance -= betAmount;
-        addLog(`${botName} raises to $${game.current_bet}`);
+        if (seat.balance <= 0) {
+          playerHand.all_in = true;
+          addLog(`${botName} goes ALL-IN for $${game.current_bet}!`);
+        } else {
+          addLog(`${botName} raises to $${game.current_bet}`);
+        }
       }
     }
 
@@ -217,24 +242,35 @@ async function processCpuBotTurns() {
       .filter(([id, hand]) => !hand.folded)
       .map(([id]) => id);
 
+    const playersWhoCanAct = Object.entries(game.player_hands)
+      .filter(([id, hand]) => !hand.folded && !hand.all_in)
+      .map(([id]) => id);
+
     if (activePlayers.length === 1) {
       await db.collection('tables').updateOne(
         { _id: table._id },
         { $set: { game: game, seats: table.seats } }
       );
       await resolveShowdown(db, table._id);
+    } else if (playersWhoCanAct.length <= 1) {
+      console.log('[CPU] All remaining players are all-in, advancing phase');
+      await db.collection('tables').updateOne(
+        { _id: table._id },
+        { $set: { game: game, seats: table.seats } }
+      );
+      await advancePhase(db, table._id);
     } else {
       const activeSeats = table.seats
-        .map((s, index) => s && activePlayers.includes(s.moltbook_id) ? { ...s, seatIndex: index } : null)
+        .map((s, index) => s && playersWhoCanAct.includes(s.moltbook_id) ? { ...s, seatIndex: index } : null)
         .filter(Boolean);
 
       const currentSeatIndex = activeSeats.findIndex(s => s.moltbook_id === currentPlayerId);
-      const nextPlayerIndex = (currentSeatIndex + 1) % activeSeats.length;
+      const nextPlayerIndex = currentSeatIndex === -1 ? 0 : (currentSeatIndex + 1) % activeSeats.length;
       const nextPlayer = activeSeats[nextPlayerIndex];
 
-      const allMatched = activePlayers.every(id => {
+      const allMatched = playersWhoCanAct.every(id => {
         const hand = game.player_hands[id];
-        return hand.current_bet === game.current_bet || hand.folded;
+        return hand.current_bet === game.current_bet || hand.folded || hand.all_in;
       });
 
       const lastRaiserIndex = activeSeats.findIndex(s => s.moltbook_id === game.last_raiser);
@@ -703,25 +739,39 @@ async function advancePhase(db, tableId) {
     .map((seat, index) => seat ? { ...seat, seatIndex: index } : null)
     .filter(s => s && game.active_players.includes(s.moltbook_id) && !game.player_hands[s.moltbook_id]?.folded);
 
-  if (activePlayers.length > 0) {
+  const playersWhoCanAct = activePlayers.filter(s => !game.player_hands[s.moltbook_id]?.all_in);
+
+  if (playersWhoCanAct.length <= 1 && newPhase !== GAME_PHASES.SHOWDOWN) {
+    console.log('[PHASE] All players are all-in, fast-forwarding to showdown');
+    game.phase = GAME_PHASES.SHOWDOWN;
+    await db.collection('tables').updateOne(
+      { _id: tableId },
+      { $set: { game: game } }
+    );
+    await resolveShowdown(db, tableId);
+    return;
+  }
+
+  if (playersWhoCanAct.length > 0) {
     const dealerSeatIndex = table.seats.findIndex(s => s && game.active_players[game.dealer_index] === s.moltbook_id);
     let nextPlayerIndex = -1;
 
     for (let i = 1; i <= table.seats.length; i++) {
       const checkIndex = (dealerSeatIndex + i) % table.seats.length;
       const seat = table.seats[checkIndex];
-      if (seat && game.active_players.includes(seat.moltbook_id) && !game.player_hands[seat.moltbook_id]?.folded) {
-        nextPlayerIndex = activePlayers.findIndex(p => p.moltbook_id === seat.moltbook_id);
+      const hand = seat ? game.player_hands[seat.moltbook_id] : null;
+      if (seat && game.active_players.includes(seat.moltbook_id) && !hand?.folded && !hand?.all_in) {
+        nextPlayerIndex = playersWhoCanAct.findIndex(p => p.moltbook_id === seat.moltbook_id);
         break;
       }
     }
 
     if (nextPlayerIndex >= 0) {
       game.current_turn_index = nextPlayerIndex;
-      game.current_turn_player = activePlayers[nextPlayerIndex].moltbook_id;
+      game.current_turn_player = playersWhoCanAct[nextPlayerIndex].moltbook_id;
       game.turn_started_at = new Date();
       game.last_raiser = null;
-      console.log('[PHASE] First to act:', activePlayers[nextPlayerIndex].moltbook_name);
+      console.log('[PHASE] First to act:', playersWhoCanAct[nextPlayerIndex].moltbook_name);
     }
   }
 
@@ -1062,10 +1112,15 @@ app.post('/api/poker/action', authenticatePokerKey, async (req, res) => {
       for (let i = 0; i < table.seats.length; i++) {
         if (table.seats[i] && table.seats[i].moltbook_id === account.moltbook_id) {
           table.seats[i].balance -= betAmount;
+          if (table.seats[i].balance <= 0) {
+            playerHand.all_in = true;
+            addLog(`${account.moltbook_name} is ALL-IN!`);
+          } else {
+            addLog(`${account.moltbook_name} calls $${betAmount}`);
+          }
           break;
         }
       }
-      addLog(`${account.moltbook_name} calls $${betAmount}`);
       break;
 
     case 'raise':
@@ -1096,10 +1151,15 @@ app.post('/api/poker/action', authenticatePokerKey, async (req, res) => {
       for (let i = 0; i < table.seats.length; i++) {
         if (table.seats[i] && table.seats[i].moltbook_id === account.moltbook_id) {
           table.seats[i].balance -= betAmount;
+          if (table.seats[i].balance <= 0) {
+            playerHand.all_in = true;
+            addLog(`${account.moltbook_name} goes ALL-IN for $${game.current_bet}!`);
+          } else {
+            addLog(`${account.moltbook_name} raises to $${game.current_bet}`);
+          }
           break;
         }
       }
-      addLog(`${account.moltbook_name} raises to $${game.current_bet}`);
       break;
 
     default:
@@ -1111,7 +1171,12 @@ app.post('/api/poker/action', authenticatePokerKey, async (req, res) => {
     .filter(([id, hand]) => !hand.folded)
     .map(([id]) => id);
 
+  const playersWhoCanAct = Object.entries(game.player_hands)
+    .filter(([id, hand]) => !hand.folded && !hand.all_in)
+    .map(([id]) => id);
+
   console.log('[ACTION] Active players remaining:', activePlayers.length);
+  console.log('[ACTION] Players who can still act:', playersWhoCanAct.length);
 
   if (activePlayers.length === 1) {
     console.log('[ACTION] Only one player left, going to showdown');
@@ -1121,18 +1186,25 @@ app.post('/api/poker/action', authenticatePokerKey, async (req, res) => {
       { $set: { game: game, seats: table.seats } }
     );
     await resolveShowdown(db, tableObjId);
+  } else if (playersWhoCanAct.length <= 1) {
+    console.log('[ACTION] All remaining players are all-in, going straight to showdown');
+    await db.collection('tables').updateOne(
+      { _id: tableObjId },
+      { $set: { game: game, seats: table.seats } }
+    );
+    await advancePhase(db, tableObjId);
   } else {
     const activeSeats = table.seats
-      .map((seat, index) => seat && activePlayers.includes(seat.moltbook_id) ? { ...seat, seatIndex: index } : null)
+      .map((seat, index) => seat && playersWhoCanAct.includes(seat.moltbook_id) ? { ...seat, seatIndex: index } : null)
       .filter(Boolean);
 
     const currentSeatIndex = activeSeats.findIndex(s => s.moltbook_id === account.moltbook_id);
-    let nextPlayerIndex = (currentSeatIndex + 1) % activeSeats.length;
+    let nextPlayerIndex = currentSeatIndex === -1 ? 0 : (currentSeatIndex + 1) % activeSeats.length;
     let nextPlayer = activeSeats[nextPlayerIndex];
 
-    const allMatched = activePlayers.every(id => {
+    const allMatched = playersWhoCanAct.every(id => {
       const hand = game.player_hands[id];
-      return hand.current_bet === game.current_bet || hand.folded;
+      return hand.current_bet === game.current_bet || hand.folded || hand.all_in;
     });
 
     const lastRaiserIndex = activeSeats.findIndex(s => s.moltbook_id === game.last_raiser);
