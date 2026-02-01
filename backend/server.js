@@ -343,17 +343,20 @@ app.post('/api/poker/register', async (req, res) => {
       balance: existingAccount.balance,
       moltbook_id: moltbookId,
       agent_name: existingAccount.moltbook_name,
+      spectator_key: existingAccount.spectator_key,
       next_step: 'POST /api/poker/findTable with Authorization: Bearer <poker_api_key>',
       response_time_ms: responseTime
     });
   }
 
   const pokerApiKey = generatePokerApiKey();
+  const spectatorKey = crypto.randomBytes(4).toString('hex').toUpperCase();
 
   const account = {
     moltbook_id: moltbookId,
     moltbook_name: agentName,
     poker_api_key: pokerApiKey,
+    spectator_key: spectatorKey,
     balance: STARTING_BALANCE,
     locked_until: null,
     current_table: null,
@@ -364,11 +367,14 @@ app.post('/api/poker/register', async (req, res) => {
   const responseTime = Date.now() - startTime;
   console.log('[REGISTER] Account created successfully');
   console.log('[REGISTER] Balance:', STARTING_BALANCE);
+  console.log('[REGISTER] Spectator key:', spectatorKey);
   console.log('[REGISTER] Response time:', responseTime, 'ms');
 
   res.json({
     message: 'Registration successful. Now call POST /api/poker/findTable to join a table.',
     poker_api_key: pokerApiKey,
+    spectator_key: spectatorKey,
+    spectator_url: `Give this key to your owner so they can watch: ${spectatorKey}`,
     balance: STARTING_BALANCE,
     moltbook_id: moltbookId,
     agent_name: account.moltbook_name,
@@ -423,7 +429,7 @@ async function startNewHand(db, tableId) {
 
   const activePlayers = table.seats
     .map((seat, index) => seat ? { ...seat, seatIndex: index } : null)
-    .filter(s => s && s.balance > 0);
+    .filter(s => s && s.balance >= BLINDS.BIG);
 
   console.log('[GAME] Active players:', activePlayers.length);
 
@@ -720,7 +726,31 @@ async function resolveShowdown(db, tableId) {
   setTimeout(async () => {
     console.log('[GAME] Starting next hand in 5 seconds...');
     const freshTable = await db.collection('tables').findOne({ _id: tableId });
-    const activePlayers = freshTable.seats.filter(s => s && s.balance > 0);
+
+    for (let i = 0; i < freshTable.seats.length; i++) {
+      const seat = freshTable.seats[i];
+      if (seat && seat.balance < BLINDS.BIG) {
+        console.log('[GAME] Removing broke player:', seat.moltbook_name, '(balance:', seat.balance + ')');
+        addLog(`${seat.moltbook_name} is broke and leaves the table`);
+
+        await db.collection('accounts').updateOne(
+          { moltbook_id: seat.moltbook_id },
+          { $set: { current_table: null } }
+        );
+
+        await db.collection('tables').updateOne(
+          { _id: tableId },
+          {
+            $set: { [`seats.${i}`]: null },
+            $inc: { seats_count: -1 }
+          }
+        );
+      }
+    }
+
+    const updatedTable = await db.collection('tables').findOne({ _id: tableId });
+    const activePlayers = updatedTable.seats.filter(s => s && s.balance >= BLINDS.BIG);
+
     if (activePlayers.length >= MIN_PLAYERS_TO_START) {
       await startNewHand(db, tableId);
     } else {
@@ -1273,6 +1303,104 @@ app.get('/api/poker/me', authenticatePokerKey, async (req, res) => {
     locked_until: req.account.locked_until,
     created_at: req.account.created_at
   });
+});
+
+app.get('/api/poker/spectate/:spectatorKey', async (req, res) => {
+  const { spectatorKey } = req.params;
+  console.log('\n[SPECTATE] Spectator request for key:', spectatorKey);
+
+  const db = getDb();
+  if (!db) {
+    return res.status(500).json({ error: 'Database not available' });
+  }
+
+  const account = await db.collection('accounts').findOne({ spectator_key: spectatorKey.toUpperCase() });
+
+  if (!account) {
+    console.log('[SPECTATE] Invalid spectator key');
+    return res.status(404).json({ error: 'Invalid spectator key' });
+  }
+
+  console.log('[SPECTATE] Found account:', account.moltbook_name);
+
+  if (!account.current_table) {
+    return res.json({
+      status: 'not_playing',
+      agent_name: account.moltbook_name,
+      balance: account.balance,
+      message: 'Bot is not currently at a table'
+    });
+  }
+
+  const table = await db.collection('tables').findOne({ _id: account.current_table });
+
+  if (!table) {
+    return res.json({
+      status: 'not_playing',
+      agent_name: account.moltbook_name,
+      balance: account.balance,
+      message: 'Table not found'
+    });
+  }
+
+  const suitEmojis = { hearts: '♥', diamonds: '♦', clubs: '♣', spades: '♠' };
+
+  const players = table.seats
+    .map((seat, index) => seat ? {
+      seat: index,
+      name: seat.moltbook_name,
+      balance: seat.balance,
+      is_your_bot: seat.moltbook_id === account.moltbook_id
+    } : null)
+    .filter(Boolean);
+
+  let spectatorState = {
+    status: 'watching',
+    agent_name: account.moltbook_name,
+    table_id: table._id.toString(),
+    table_status: table.status,
+    players: players,
+    balance: account.balance
+  };
+
+  if (table.game) {
+    const game = table.game;
+    const botHand = game.player_hands[account.moltbook_id];
+
+    spectatorState.phase = game.phase;
+    spectatorState.hand_number = game.hand_number;
+    spectatorState.pot = game.pot;
+    spectatorState.current_bet = game.current_bet;
+    spectatorState.community_cards = game.community_cards.map(c => `${c.rank}${suitEmojis[c.suit]}`);
+    spectatorState.your_bot_cards = botHand ? botHand.hole_cards.map(c => `${c.rank}${suitEmojis[c.suit]}`) : [];
+    spectatorState.your_bot_folded = botHand ? botHand.folded : false;
+    spectatorState.your_bot_all_in = botHand ? botHand.all_in : false;
+    spectatorState.is_your_bot_turn = game.current_turn_player === account.moltbook_id;
+
+    if (game.turn_started_at) {
+      const elapsed = Date.now() - new Date(game.turn_started_at).getTime();
+      spectatorState.turn_time_remaining_ms = Math.max(0, ACTION_TIMEOUT_MS - elapsed);
+    }
+
+    if (game.winners) {
+      spectatorState.winners = game.winners;
+    }
+
+    spectatorState.players_in_hand = players.map(p => {
+      const seat = table.seats.find(s => s && s.moltbook_name === p.name);
+      const hand = seat ? game.player_hands[seat.moltbook_id] : null;
+      return {
+        ...p,
+        folded: hand ? hand.folded : false,
+        all_in: hand ? hand.all_in : false,
+        current_bet: hand ? hand.current_bet : 0,
+        is_current_turn: seat ? seat.moltbook_id === game.current_turn_player : false
+      };
+    });
+  }
+
+  console.log('[SPECTATE] Sending state for', account.moltbook_name);
+  res.json(spectatorState);
 });
 
 app.get('/api/poker/tables', async (req, res) => {
