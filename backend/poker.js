@@ -60,8 +60,8 @@ export function dealCards(deck, count) {
 }
 
 export function cardToString(card) {
-  const suitSymbols = { hearts: 'h', diamonds: 'd', clubs: 'c', spades: 's' };
-  return `${card.rank}${suitSymbols[card.suit]}`;
+  const suitEmojis = { hearts: '♥', diamonds: '♦', clubs: '♣', spades: '♠' };
+  return `${card.rank}${suitEmojis[card.suit]}`;
 }
 
 export function cardsToString(cards) {
