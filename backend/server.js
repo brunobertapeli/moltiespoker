@@ -39,6 +39,39 @@ app.get('/api/health', async (req, res) => {
   });
 });
 
+app.post('/api/admin/cleanup', async (req, res) => {
+  console.log('[ADMIN] Cleanup request - removing broken records');
+  const db = getDb();
+  if (!db) return res.status(500).json({ error: 'Database not available' });
+
+  const accountsResult = await db.collection('accounts').deleteMany({
+    $or: [
+      { moltbook_id: null },
+      { moltbook_id: { $exists: false } },
+      { moltbook_name: 'Unknown Agent' }
+    ]
+  });
+
+  const tablesResult = await db.collection('tables').deleteMany({});
+
+  console.log('[ADMIN] Deleted', accountsResult.deletedCount, 'broken accounts');
+  console.log('[ADMIN] Deleted', tablesResult.deletedCount, 'tables');
+
+  res.json({
+    message: 'Cleanup complete',
+    deleted_accounts: accountsResult.deletedCount,
+    deleted_tables: tablesResult.deletedCount
+  });
+});
+
+app.get('/api/ping', (req, res) => {
+  const serverTime = Date.now();
+  res.json({
+    server_time: serverTime,
+    server_time_iso: new Date(serverTime).toISOString()
+  });
+});
+
 app.get('/api/docs', (req, res) => {
   const baseUrl = 'https://pokerclaw-5250z9-backend-production.up.railway.app';
   res.type('text/plain').send(`POKERCLAW API - Poker for AI Agents
@@ -123,6 +156,7 @@ function generatePokerApiKey() {
 }
 
 app.post('/api/poker/register', async (req, res) => {
+  const startTime = Date.now();
   console.log('\n========================================');
   console.log('[REGISTER] New registration request');
   console.log('[REGISTER] Timestamp:', new Date().toISOString());
@@ -163,15 +197,18 @@ app.post('/api/poker/register', async (req, res) => {
   const existingAccount = await db.collection('accounts').findOne({ moltbook_id: moltbookId });
 
   if (existingAccount) {
+    const responseTime = Date.now() - startTime;
     console.log('[REGISTER] Agent already registered, returning existing account');
     console.log('[REGISTER] Poker API key:', existingAccount.poker_api_key.substring(0, 8) + '...');
+    console.log('[REGISTER] Response time:', responseTime, 'ms');
     return res.json({
       message: 'Already registered. Use your poker_api_key to call POST /api/poker/findTable',
       poker_api_key: existingAccount.poker_api_key,
       balance: existingAccount.balance,
       moltbook_id: moltbookId,
       agent_name: existingAccount.moltbook_name,
-      next_step: 'POST /api/poker/findTable with Authorization: Bearer <poker_api_key>'
+      next_step: 'POST /api/poker/findTable with Authorization: Bearer <poker_api_key>',
+      response_time_ms: responseTime
     });
   }
 
@@ -188,8 +225,10 @@ app.post('/api/poker/register', async (req, res) => {
   };
 
   await db.collection('accounts').insertOne(account);
+  const responseTime = Date.now() - startTime;
   console.log('[REGISTER] Account created successfully');
   console.log('[REGISTER] Balance:', STARTING_BALANCE);
+  console.log('[REGISTER] Response time:', responseTime, 'ms');
 
   res.json({
     message: 'Registration successful. Now call POST /api/poker/findTable to join a table.',
@@ -197,7 +236,8 @@ app.post('/api/poker/register', async (req, res) => {
     balance: STARTING_BALANCE,
     moltbook_id: moltbookId,
     agent_name: account.moltbook_name,
-    next_step: 'POST /api/poker/findTable with Authorization: Bearer <poker_api_key>'
+    next_step: 'POST /api/poker/findTable with Authorization: Bearer <poker_api_key>',
+    response_time_ms: responseTime
   });
 
   console.log('[REGISTER] Response sent');
@@ -265,6 +305,7 @@ async function findOrCreateAvailableTable(db) {
 }
 
 app.post('/api/poker/findTable', authenticatePokerKey, async (req, res) => {
+  const startTime = Date.now();
   console.log('\n========================================');
   console.log('[FIND_TABLE] Find table request');
   console.log('[FIND_TABLE] Timestamp:', new Date().toISOString());
@@ -329,18 +370,21 @@ app.post('/api/poker/findTable', authenticatePokerKey, async (req, res) => {
     { $set: { current_table: table._id } }
   );
 
+  const responseTime = Date.now() - startTime;
   console.log('[FIND_TABLE] Agent seated successfully');
   console.log('[FIND_TABLE] Table ID:', table._id.toString());
   console.log('[FIND_TABLE] Seat number:', emptySeatIndex);
   console.log('[FIND_TABLE] Players at table:', table.seats_count + 1);
+  console.log('[FIND_TABLE] Response time:', responseTime, 'ms');
 
   res.json({
-    message: 'Seated at table',
+    message: 'Seated at table. Game will start when more players join.',
     table_id: table._id.toString(),
     seat_number: emptySeatIndex,
     your_balance: account.balance,
     players_at_table: table.seats_count + 1,
-    max_seats: SEATS_PER_TABLE
+    max_seats: SEATS_PER_TABLE,
+    response_time_ms: responseTime
   });
 
   console.log('[FIND_TABLE] Response sent');
