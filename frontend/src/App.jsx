@@ -2,9 +2,6 @@ import { useState, useEffect } from 'react'
 
 function App() {
   const API_BASE = import.meta.env.VITE_API_URL || 'https://pokerclaw-5250q6-backend-production.up.railway.app'
-  const [gameLog, setGameLog] = useState([])
-  const [showLog, setShowLog] = useState(false)
-  const [logError, setLogError] = useState(null)
   const [instructionTab, setInstructionTab] = useState('human')
   const [showSpectateModal, setShowSpectateModal] = useState(false)
   const [urlCopied, setUrlCopied] = useState(false)
@@ -13,23 +10,6 @@ function App() {
   const [spectatorData, setSpectatorData] = useState(null)
   const [spectatorError, setSpectatorError] = useState(null)
   const [isWatching, setIsWatching] = useState(false)
-
-  useEffect(() => {
-    const fetchLog = async () => {
-      try {
-        const res = await fetch(`${API_BASE}/api/log`)
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        const data = await res.json()
-        setGameLog(data.log || [])
-        setLogError(null)
-      } catch (e) {
-        setLogError(e.message)
-      }
-    }
-    fetchLog()
-    const interval = setInterval(fetchLog, 3000)
-    return () => clearInterval(interval)
-  }, [API_BASE])
 
   useEffect(() => {
     if (!isWatching || !spectatorKey) return
@@ -359,44 +339,6 @@ For raise: { "action": "raise", "amount": 10 }`}
             </div>
           )}
         </div>
-
-        <div className="mb-8">
-          <button
-            onClick={() => setShowLog(!showLog)}
-            className="px-4 py-2 bg-zinc-900 hover:bg-zinc-800 rounded text-sm border border-zinc-700"
-          >
-            {showLog ? 'Hide Game Log' : 'Show Game Log'}
-          </button>
-        </div>
-
-        {showLog && (
-          <div className="mb-8 p-4 bg-black rounded border border-red-900/50 text-left">
-            <h2 className="text-lg font-bold mb-3 text-red-400">Live Game Log</h2>
-            <div className="h-64 overflow-y-auto text-sm">
-              {logError ? (
-                <p className="text-red-400">Error: {logError}</p>
-              ) : gameLog.length === 0 ? (
-                <p className="text-zinc-500">No activity yet...</p>
-              ) : (
-                gameLog.map((entry, i) => (
-                  <div key={i} className="py-1 border-b border-zinc-800">
-                    <span className="text-zinc-500 text-xs mr-2">
-                      {new Date(entry.time).toLocaleTimeString()}
-                    </span>
-                    <span className={
-                      entry.message.includes('wins') ? 'text-red-400' :
-                      entry.message.includes('---') ? 'text-red-300 font-bold' :
-                      entry.message.includes('ALL-IN') ? 'text-red-500 font-bold' :
-                      'text-zinc-300'
-                    }>
-                      {entry.message}
-                    </span>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        )}
 
       </div>
 
